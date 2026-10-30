@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Orbit — Local Consumer Intelligence",
+  "version": "1.0.0",
+  "description": "With your approval, analyze Chrome visit records locally in your Orbit dashboard. No uploads, trackers, cookies, or passwords.",
+  "optional_permissions": ["history"],
+  "action": {"default_popup":"popup.html","default_title":"Connect Orbit","default_icon":{"16":"icons/16.png","32":"icons/32.png","48":"icons/48.png","128":"icons/128.png"}},
+  "icons":{"16":"icons/16.png","32":"icons/32.png","48":"icons/48.png","128":"icons/128.png"},
+  "background": {"service_worker":"background.js","type":"module"},
+  "content_scripts": [{"matches":["https://josselly.github.io/consumer.profile/*"],"js":["bridge.js"],"run_at":"document_idle"}],
+  "content_security_policy": {"extension_pages":"script-src 'self'; object-src 'none'"}
+}
