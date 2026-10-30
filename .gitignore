@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.DS_Store
+.env*
+!.env.example
+*.log
+coverage/
+personal-data/
+imports/
+*.csv
+*.zip
+!public/extension.zip
