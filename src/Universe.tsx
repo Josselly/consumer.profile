@@ -1,0 +1,42 @@
+import {useEffect,useRef,useState} from 'react';
+import * as d3 from 'd3';
+import {Minus,Plus,Maximize2,Search,Orbit} from 'lucide-react';
+import {type RecordItem,type Product,categories,categoryColor} from './engine';
+type Node = d3.SimulationNodeDatum & {id:string; label:string; kind:string; category:string; count:number; evidence:RecordItem[]};
+type Edge = d3.SimulationLinkDatum<Node> & {weight:number};
+export function buildGraph(records:RecordItem[],products:Product[]){
+  const nodes:Node[]=[]; const links:Edge[]=[];
+  const counts=d3.group(records,r=>r.domain);
+  const domainEntries=[...counts].sort((a,b)=>b[1].length-a[1].length).slice(0,70);
+  for(const c of categories){const evidence=records.filter(r=>r.category===c.name);if(evidence.length)nodes.push({id:'c:'+c.name,label:c.name,kind:'Interest',category:c.name,count:evidence.length,evidence});}
+  for(const [domain,evidence]of domainEntries){nodes.push({id:'d:'+domain,label:domain,kind:'Website',category:d3.rollups(evidence,v=>v.length,r=>r.category).sort((a,b)=>b[1]-a[1])[0][0],count:evidence.length,evidence});for(const c of categories){const n=evidence.filter(r=>r.category===c.name).length;if(n)links.push({source:'d:'+domain,target:'c:'+c.name,weight:n});}}
+  for(const [brand,evidence]of [...d3.group(records.filter(r=>r.brand),r=>r.brand!)].slice(0,25)){const category=evidence[0].category;nodes.push({id:'b:'+brand,label:brand,kind:'Brand mention',category,count:evidence.length,evidence});if(nodes.some(n=>n.id==='c:'+category))links.push({source:'b:'+brand,target:'c:'+category,weight:evidence.length});}
+  for(const p of products.slice(0,20)){if(nodes.some(n=>n.id==='c:'+p.category)){const evidence=records.filter(r=>r.category===p.category);nodes.push({id:'p:'+p.id,label:p.name,kind:'Catalog product · inferred category link',category:p.category,count:1,evidence});links.push({source:'p:'+p.id,target:'c:'+p.category,weight:1});}}
+  // Weighted label propagation, deterministic order, bounded iterations.
+  const communities=new Map(nodes.map(n=>[n.id,n.id]));
+  for(let step=0;step<8;step++){let changed=false;for(const n of nodes){const votes=new Map<string,number>();for(const l of links){const other=l.source===n.id?String(l.target):l.target===n.id?String(l.source):null;if(other){const label=communities.get(other)!;votes.set(label,(votes.get(label)??0)+l.weight);}}const winner=[...votes].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0]))[0]?.[0];if(winner&&winner!==communities.get(n.id)){communities.set(n.id,winner);changed=true;}}if(!changed)break;}
+  return {nodes,links,communityCount:new Set(communities.values()).size};
+}
+export default function Universe({records,products,onEvidence}:{records:RecordItem[];products:Product[];onEvidence:(title:string,records:RecordItem[])=>void}){
+  const ref=useRef<SVGSVGElement>(null);const zoomRef=useRef<d3.ZoomBehavior<SVGSVGElement,unknown>|null>(null);const [query,setQuery]=useState('');const [filter,setFilter]=useState('All interests');const [stats,setStats]=useState({nodes:0,links:0,communities:0});
+  useEffect(()=>{
+    const svg=d3.select(ref.current!);svg.selectAll('*').remove();
+    const graph=buildGraph(records,products);setStats({nodes:graph.nodes.length,links:graph.links.length,communities:graph.communityCount});
+    if(!graph.nodes.length)return;
+    const group=svg.append('g');const zoom=d3.zoom<SVGSVGElement,unknown>().scaleExtent([.35,4]).on('zoom',e=>group.attr('transform',e.transform));zoomRef.current=zoom;svg.call(zoom).on('dblclick.zoom',null);
+    graph.nodes.forEach((n,i)=>{n.x=450+Math.cos(i*2.399)*Math.sqrt(i+1)*26;n.y=260+Math.sin(i*2.399)*Math.sqrt(i+1)*22;});
+    const edge=group.append('g').selectAll('line').data(graph.links).join('line').attr('stroke','#829797').attr('stroke-opacity',.2).attr('stroke-width',d=>Math.min(3,.5+Math.sqrt(d.weight)*.4));
+    const node=group.append('g').selectAll<SVGGElement,Node>('g').data(graph.nodes).join('g').attr('tabindex',0).attr('role','button').attr('aria-label',d=>`${d.label}, ${d.count} supporting records. Open evidence.`).attr('class','graph-node').on('click',(_e,d)=>onEvidence(`${d.label} · ${d.kind}`,d.evidence)).on('keydown',(e,d)=>{if(e.key==='Enter')onEvidence(`${d.label} · ${d.kind}`,d.evidence);});
+    const radius=(n:Node)=>n.kind==='Interest'?22+Math.sqrt(n.count)*2:6+Math.min(15,Math.sqrt(n.count)*2);
+    node.append('circle').attr('r',d=>radius(d)+7).attr('fill',d=>categoryColor(d.category)).attr('opacity',.05);
+    node.append('circle').attr('r',radius).attr('fill',d=>categoryColor(d.category)).attr('fill-opacity',d=>d.kind==='Interest'?.18:.8).attr('stroke',d=>categoryColor(d.category)).attr('stroke-width',d=>d.kind==='Interest'?1.5:.5);
+    node.append('text').text(d=>d.label.length>26?d.label.slice(0,24)+'…':d.label).attr('y',d=>radius(d)+17).attr('text-anchor','middle').attr('fill','currentColor').attr('font-size',d=>d.kind==='Interest'?12:10).attr('font-weight',d=>d.kind==='Interest'?600:400);
+    node.append('title').text(d=>`${d.label}\n${d.kind}\n${d.count} evidence records`);
+    const sim=d3.forceSimulation(graph.nodes).force('link',d3.forceLink<Node,Edge>(graph.links).id(d=>d.id).distance(d=>d.source&&d.target?95:80).strength(.3)).force('charge',d3.forceManyBody().strength(-180)).force('center',d3.forceCenter(450,245)).force('x',d3.forceX(450).strength(.025)).force('y',d3.forceY(245).strength(.055)).force('collision',d3.forceCollide<Node>().radius(d=>radius(d)+24)).on('tick',()=>{edge.attr('x1',d=>(d.source as Node).x!).attr('y1',d=>(d.source as Node).y!).attr('x2',d=>(d.target as Node).x!).attr('y2',d=>(d.target as Node).y!);node.attr('transform',d=>`translate(${d.x},${d.y})`);});
+    node.call(d3.drag<SVGGElement,Node>().on('start',(e,d)=>{if(!e.active)sim.alphaTarget(.2).restart();d.fx=d.x;d.fy=d.y;}).on('drag',(e,d)=>{d.fx=e.x;d.fy=e.y;}).on('end',(e,d)=>{if(!e.active)sim.alphaTarget(0);d.fx=null;d.fy=null;}));
+    return()=>{sim.stop();svg.on('.zoom',null);};
+  },[records,products,onEvidence]);
+  useEffect(()=>{d3.select(ref.current).selectAll<SVGGElement,Node>('.graph-node').attr('opacity',d=>(!query||d.label.toLowerCase().includes(query.toLowerCase()))&&(filter==='All interests'||d.category===filter)?1:.12);},[query,filter,stats]);
+  function changeZoom(scale:number){if(zoomRef.current&&ref.current)d3.select(ref.current).transition().duration(250).call(zoomRef.current.scaleBy,scale);}
+  return <div className="universe panel"><div className="panel-heading"><div><span className="eyebrow">THE BIG PICTURE</span><h2>Your interest universe <span className="live-dot"/></h2></div><span className="pill">{records.length?`${stats.nodes} nodes · ${stats.links} links`:'Awaiting your data'}</span></div><div className="graph-tools"><label className="search"><Search size={15}/><input aria-label="Search graph nodes" placeholder="Find an interest, brand, or website" value={query} onChange={e=>setQuery(e.target.value)}/></label><select aria-label="Filter graph by category" value={filter} onChange={e=>setFilter(e.target.value)}><option>All interests</option>{categories.map(c=><option key={c.name}>{c.name}</option>)}</select></div><div className="graph-stage"><svg ref={ref} viewBox="0 0 900 530" aria-label="Interactive network of your imported activity"/>{!records.length&&<div className="graph-empty"><div className="orbital"><div/><div/><div/><Orbit size={48}/><i/><i/></div><h3>Your world, waiting to take shape.</h3><p>Connect Chrome or import your activity to reveal<br/>the connections behind your interests.</p><span className="tiny">No sample profiles. Only your real evidence.</span></div>}<div className="graph-controls"><button aria-label="Zoom in" onClick={()=>changeZoom(1.3)}><Plus size={16}/></button><button aria-label="Zoom out" onClick={()=>changeZoom(.77)}><Minus size={16}/></button><button aria-label="Reset graph view" onClick={()=>{if(zoomRef.current&&ref.current)d3.select(ref.current).transition().call(zoomRef.current.transform,d3.zoomIdentity);}}><Maximize2 size={15}/></button></div><div className="graph-caption">{records.length?`${stats.communities} detected communities · drag nodes · scroll to zoom · click for evidence`:'A private map of your digital curiosity'}</div></div><div className="graph-legend">{categories.map(c=><span key={c.name}><i style={{background:c.color}}/>{c.name}</span>)}</div><div className="panel-footer">Node size = supporting records <span>Connections show category co-occurrence, not causation.</span></div></div>;
+}
